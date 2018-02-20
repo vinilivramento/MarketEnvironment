@@ -16,7 +16,7 @@ class Deep_QLearning_Actor:
         self._epsilon = 1.0 ## exploration rate
         self._min_epsilon = 0.01 
         self._epsilon_decay = 0.995 
-        self._gamma = 0.95 #future discount rate 
+        self._gamma = 0.99 #future discount rate 
         self._batch_size = 64
         self._memory = deque(maxlen=10000)
         self._env = env
@@ -77,7 +77,8 @@ class Deep_QLearning_Actor:
         else:
             return np.argmax(self._model.predict(self._preprocess(state)))
 
-    def train(self, num_episodes=1000):
+    def train(self, num_episodes=500):
+        print("-------------------------Training Actor------------------------")
         max_score = [-1,-1]
         total_reward_per_episode = []
         for episode in range(num_episodes):
@@ -87,19 +88,45 @@ class Deep_QLearning_Actor:
             while not done:
                 action = self.act(cur_state)
                 next_state, reward, done, _ = self._env.step(action)
+                # print("Action ", action, " Reward ", reward)
                 self._update(cur_state, action, reward, next_state, done)
                 acc_reward += reward
                 cur_state = next_state
             total_reward_per_episode.append(acc_reward)
-            logging.info("Episode {}/{}: score: {} epsilon: {:.2}" .format(episode, num_episodes, acc_reward+10000, self._epsilon))
+            logging.info("Episode {}/{}: score: {} epsilon: {:.2}" .format(episode, num_episodes, acc_reward, self._epsilon))
             if acc_reward > max_score[0]: 
                 max_score[0] = acc_reward
                 max_score[1] = episode
             self._replay()
+            # if episode % 10 == 0:
+                # self._env.render()
         logging.info("Max Score: {} at episode: {}" .format(max_score[0], max_score[1]))
         self.plot(total_reward_per_episode)
 
+    def test(self, num_episodes=1):
+        print("-------------------------Testing Actor------------------------")
+        max_score = [-1,-1]
+        total_reward_per_episode = []
+        self._epsilon = -1.0 ## ensure to always get the highest cost during test mode
+        for episode in range(num_episodes):
+            cur_state = self._env.reset()
+            done = False
+            acc_reward = 0
+            while not done:
+                action = self.act(cur_state)
+                next_state, reward, done, _ = self._env.step(action)
+                acc_reward += reward
+                cur_state = next_state
+            total_reward_per_episode.append(acc_reward)
+            logging.info("Episode {}/{}: score: {} epsilon: {:.2}" .format(episode, num_episodes, acc_reward, self._epsilon))
+            if acc_reward > max_score[0]: 
+                max_score[0] = acc_reward
+                max_score[1] = episode
+            self._env.render()
+        logging.info("Max Score: {} at episode: {}" .format(max_score[0], max_score[1]))
+
     def plot(self, total_reward_per_episode):
+        fig = plt.figure('training')
         plt.plot(total_reward_per_episode)
         plt.ylabel('episode')
         plt.xlabel('reward')

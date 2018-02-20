@@ -13,23 +13,8 @@ import backtrader as bt
 import gym
 from gym import spaces
 
-from enum import Enum, unique
-
-@unique
-class Action(Enum):
-    HOLD = 0
-    BUY = 1
-    SELL = 2
-   
-    @classmethod
-    def size(cls):
-        return 3
-
-@unique
-class Position(Enum):
-    SHORT = 0
-    LONG = 1
-    IDLE = 2
+from markettrading.backtradercomm.csv_formats import BinanceCSVData 
+from markettrading.environments.actions import Action, Position
 
 class DefaultStrategy(bt.Strategy, threading.Thread):
     def __init__(self, price_set_event, new_action_event, action_callback, price_callback, new_state_callback, stake):
@@ -75,15 +60,17 @@ class DefaultStrategy(bt.Strategy, threading.Thread):
             #notify backtrader that the price was set 
             self._price_callback(order.executed.price)
             self._price_set_event.set()
-        elif order.status in [order.Canceled, order.Margin, order.Rejected]:
-            logging.debug('Order Canceled/Margin/Rejected')
+        elif order.status == order.Canceled: logging.debug('Order Canceled: user request for cancellation')
+        elif order.status == order.Margin:   logging.debug('Order Margin: out of cash')
+        elif order.status == order.Rejected: logging.debug('Order Rejected: broker issue due to some wrong parameter')
+        elif order.status == order.Expired:  logging.debug('Order Expired: previously accepted order had a time validity')
 
         self._order = None
 
     def notify_trade(self, trade):
         if not trade.isclosed:
             return
-        logging.debug('OPERATION PROFIT, GROSS %.2f, NET %.2f, VOL %.2f' .format(trade.pnl, trade.pnlcomm, self._stake))
+        logging.debug("Operation Profit, Gross: {}, Net: {}, Vol: {}" .format(trade.pnl, trade.pnlcomm, self._stake))
 
     def next(self):
         logging.debug("New Candle Received. O: {}, H: {}, L: {}, C: {}" .format(self._data_open[0], self.data_high[0], self._data_low[0], self.data_close[0]))
@@ -98,10 +85,10 @@ class DefaultStrategy(bt.Strategy, threading.Thread):
 
         if action == Action.BUY and cur_position != Position.LONG:
             logging.debug("BUY CREATE")
-            self._order = self.buy()
+            self._order = self.buy(exectype=bt.Order.Market)
         elif action == Action.SELL and cur_position != Position.SHORT:
             logging.debug("SELL CREATE")
-            self._order = self.sell()
+            self._order = self.sell(exectype=bt.Order.Market)
         else: #ignoring buy when bought and sell when sold
             self._price_set_event.set()
 
@@ -127,23 +114,24 @@ class BacktraderCommunication(threading.Thread):
         """
         Keyword Args:
             
-            strategy=DefaultStrategy
-            data_feed=DefaultFeed                       Details about the data feed
-            stake=10                                 
-            init_cash=10000
-            broker_commission=0.001                     0.1%
+            strategy = DefaultStrategy
+            data_feed = DefaultFeed                       Details about the data feed
+            stake = 1                                 
+            init_cash = 10000
+            broker_commission = 0.001                     0.1%
         """
 
         strategy = DefaultStrategy
         if 'strategy' in kwargs: strategy = kwargs['strategy']
         
-        data_feed = DataFeed('orcl-1995-2014.txt', '1995/1/4', '1996/12/30')
+        # data_feed = DataFeed('orcl-1995-2014.csv', '1995/1/4', '1996/12/30')
+        data_feed = DataFeed('Binance_BTCUSDT_1d_08-01-2017_01-31-2018.csv', '2017/08/01', '2018/01/31')
         if 'data_feed' in kwargs: data_feed = kwargs['data_feed']
 
-        self._stake = 10
+        self._stake = 1
         if 'stake' in kwargs: self._stake = kwargs['stake']
 
-        self._init_cash = 10000
+        self._init_cash = 100000
         if 'init_cash' in kwargs: self._init_cash = kwargs['init_cash']
 
         self._broker_commission = 0.001 
@@ -167,14 +155,20 @@ class BacktraderCommunication(threading.Thread):
         abs_path = os.path.dirname(os.path.abspath(sys.argv[0]))
         feed_path = os.path.join(abs_path, 'data/' + data_feed.feed_name)
 
-        data = bt.feeds.YahooFinanceCSVData(
-                dataname=feed_path,
-                fromdate=pd.to_datetime(data_feed.start_date),
-                todate=pd.to_datetime(data_feed.end_date),
-#                timeframe=TimeFrame.Day,
-                reverse=False)
+  #       data = bt.feeds.YahooFinanceCSVData(
+                # dataname=feed_path,
+                # fromdate=pd.to_datetime(data_feed.start_date),
+                # todate=pd.to_datetime(data_feed.end_date),
+# #                timeframe=TimeFrame.Day,
+                # reverse=False)
+
+        data = BinanceCSVData(
+            dataname=feed_path,
+            fromdate=pd.to_datetime(data_feed.start_date),
+            todate=pd.to_datetime(data_feed.end_date))
+
         self._cerebro.adddata(data)
-        
+       
         self._cerebro.addsizer(bt.sizers.FixedSize, stake=self._stake)
         self._cerebro.broker.setcommission(commission=self._broker_commission)
     
@@ -192,21 +186,24 @@ class BacktraderCommunication(threading.Thread):
         self._new_state_event.set()
 
     def _compute_reward(self):
+        reward = 0
         if self._position == Position.IDLE:
             if self._action == Action.BUY:    self._position = Position.LONG
             elif self._action == Action.SELL: self._position = Position.SHORT
-            self._position_entry_price = self._price
-            return 0
+            if self._action != Action.HOLD:  self._position_entry_price = self._price
         elif self._position == Position.LONG:
             if self._action == Action.SELL: 
+                reward = self._stake*(self._price - self._position_entry_price)
                 self._position = Position.IDLE
-                return self._stake*(self._price - self._position_entry_price)
-            return 0 #Hold
+                self._position_entry_price = None
+                #TODO try non-negative reward using max
         elif self._position == Position.SHORT:
+            reward
             if self._action == Action.BUY:
+                reward = self._stake*(self._position_entry_price - self._price)
                 self._position = Position.IDLE
-                return self._stake*(self._position_entry_price - self._price)
-            return 0 #Hold
+                self._position_entry_price = None
+        return reward 
 
     def reset(self):
         self._position = Position.IDLE
